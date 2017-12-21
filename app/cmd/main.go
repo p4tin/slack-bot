@@ -1,34 +1,50 @@
 package main
 
 import (
-	"encoding/csv"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
+	"os"
 	"slack-bot/app"
+	"slack-bot/app/clients/aws"
 	"slack-bot/app/clients/slack"
+	"strconv"
 )
 
-var apiToken string
+var (
+	monitoredQueues = os.Getenv("MONITORED_QUEUES")
+	maxQueueDepths  = os.Getenv("MAX_QUEUE_DEPTHS")
+	slackChannel    = os.Getenv("SLACK_CHANNEL")
+	apiToken        = os.Getenv("SLACK_TOKEN")
+	awsRegion       = os.Getenv("AWS_REGION")
+	awsServer       = "sqs." + awsRegion + ".amazonaws.com"
+	awsClientID     = os.Getenv("AWS_CLIENT_ID")
+)
 
 func pollQueues(slackClient *slack.SlackClient) {
+	queues := []string{"PAUL_TEST", "JING_TEST"}
+	awsClient := aws.CreateSqsClient(awsServer, awsRegion, awsClientID)
 	m := app.Message{}
-	m.Text = "Hello World!!!"
+	m.Type = "message"
+	m.Channel = slackChannel //"C0MFL9YTY"
 	m.User = "@here"
 	for {
 		<-time.After(5 * time.Second)
-		err := slackClient.PostMessage(m)
-		if err != nil {
-			fmt.Printf("Error sending Hello World Message: %s\n", err.Error())
+		for _, queue := range queues {
+			depth, _ := strconv.Atoi(awsClient.GetSQSQueueDepth(queue))
+			timeStr := time.Now().Format("2006-01-02 15:04:05")
+			m.Text = fmt.Sprintf("%s - Queue: %s, Depth %d", timeStr, queue, depth)
+			err := slackClient.PostMessage(m)
+			if err != nil {
+				fmt.Printf("Error sending queue deoth messaage to Slack: %s\n", err.Error())
+			}
 		}
 	}
 }
 
 func main() {
-	apiToken = "xoxb-21530270550-46NmEGWv6F4VIbY0WtmJvUaR"
 	slackClient := slack.CreateSlackClient(apiToken)
 	notes := make(map[string]map[int]string)
 
@@ -44,20 +60,12 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-
 		// see if we're mentioned
 		if m.Type == "message" && strings.HasPrefix(m.Text, "<@"+id+">") {
 			// if so try to parse if
 			parts := strings.Fields(m.Text)
 
-			if len(parts) == 3 && parts[1] == "stock" {
-				// looks good, get the quote and reply with the result
-				go func(m app.Message) {
-					m.Text = getQuote(m.User, parts[2])
-					slackClient.PostMessage(m)
-				}(m)
-				// NOTE: the Message object is copied, this is intentional
-			} else if len(parts) > 2 && parts[1] == "save" {
+			if len(parts) > 2 && parts[1] == "save" {
 				note := strings.Join(append(parts[:0], parts[2:]...), " ")
 				aMap := map[int]string{
 					0: note,
@@ -74,23 +82,4 @@ func main() {
 			slackClient.PostMessage(m)
 		}
 	}
-}
-
-// Get the quote via Yahoo. You should replace this method to something
-// relevant to your team!
-func getQuote(user string, sym string) string {
-	sym = strings.ToUpper(sym)
-	url := fmt.Sprintf("http://download.finance.yahoo.com/d/quotes.csv?s=%s&f=nsl1op&e=.csv", sym)
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Sprintf("error: %v", err)
-	}
-	rows, err := csv.NewReader(resp.Body).ReadAll()
-	if err != nil {
-		return fmt.Sprintf("error: %v", err)
-	}
-	if len(rows) >= 1 && len(rows[0]) == 5 {
-		return fmt.Sprintf("@%s - %s (%s) is trading at $%s", user, rows[0][0], rows[0][1], rows[0][2])
-	}
-	return fmt.Sprintf("unknown response format (symbol was \"%s\")", sym)
 }
