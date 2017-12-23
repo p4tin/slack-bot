@@ -2,14 +2,13 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"os"
 	"slack-bot/app"
 	"slack-bot/app/clients/aws"
-	"slack-bot/app/clients/slack"
+	"github.com/nlopes/slack"
 	"strconv"
 )
 
@@ -23,63 +22,89 @@ var (
 	awsClientID     = os.Getenv("AWS_CLIENT_ID")
 )
 
-func pollQueues(slackClient *slack.SlackClient) {
-	queues := []string{"PAUL_TEST", "JING_TEST"}
-	awsClient := aws.CreateSqsClient(awsServer, awsRegion, awsClientID)
+func outputMessage(queueList []app.Queue) {
+	api := slack.New(os.Getenv("SLACK_TOKEN"))
+	params := slack.PostMessageParameters{}
+
+	numAlertQueues := 0
+	text := "```"
+	text = text + fmt.Sprintf("%-50s%-20s%s\n","Queue", "Current Depth", "Alert Depth")
+	text = text + fmt.Sprintln("___")
+	for x:=0;x<len(queueList);x++ {
+		if queueList[x].LastDepth >= queueList[x].MaxDepth {
+			numAlertQueues++
+			text = text + fmt.Sprintf("%-50s%-20d%d\n", queueList[x].Name, queueList[x].LastDepth, queueList[x].MaxDepth)
+		}
+	}
+	text = text + "```"
+	color := "#CC0000"
+	if numAlertQueues == 0 {
+		text = "No Queues are in trouble at this time..."
+		color = "#00CC00"
+	}
+	attachment := slack.Attachment{
+		//AuthorIcon: "https://clouda-assets.s3.amazonaws.com/upload/54d0e623d287c266052be732.png?1422976549",
+		//AuthorName: "AWS Queue Depth Alert Bot",
+		Color:      color,
+		Title:      "Queues that exceed alert depth",
+		MarkdownIn: []string{"text", "pretext"},
+		Text: 	text,
+		//Fields: fields,
+	}
+	params.Username = "AWS Queue Depth Alert Bot"
+	params.AsUser = true
+	params.IconEmoji = "https://avatars.slack-edge.com/2017-12-22/290637412467_5a6d58b2f73076443114_48.png"
+	params.Attachments = []slack.Attachment{attachment}
+	channelID, timestamp, err := api.PostMessage(os.Getenv("SLACK_CHANNEL"), "", params)
+	if err != nil {
+		fmt.Printf("-->>%s\n", err)
+		return
+	}
+	fmt.Printf("Message successfully sent to channel %s at %s\n", channelID, timestamp)
+}
+
+func pollQueues(awsClient *aws.SqsClient, queueList []app.Queue) {
+	var err error
 	m := app.Message{}
 	m.Type = "message"
-	m.Channel = slackChannel //"C0MFL9YTY"
+	m.Channel = slackChannel
 	m.User = "@here"
 	for {
-		<-time.After(5 * time.Second)
-		for _, queue := range queues {
-			depth, _ := strconv.Atoi(awsClient.GetSQSQueueDepth(queue))
-			timeStr := time.Now().Format("2006-01-02 15:04:05")
-			m.Text = fmt.Sprintf("%s - Queue: %s, Depth %d", timeStr, queue, depth)
-			err := slackClient.PostMessage(m)
+		for x:=0;x<len(queueList);x++ {
+			queueList[x].LastDepth, err = strconv.Atoi(awsClient.GetSQSQueueDepth(queueList[x].Name))
 			if err != nil {
-				fmt.Printf("Error sending queue deoth messaage to Slack: %s\n", err.Error())
+				fmt.Println("Error:", err.Error())
 			}
 		}
+		fmt.Printf("%+v", queueList)
+		outputMessage(queueList)
+		<-time.After(10 * time.Minute)
 	}
 }
 
 func main() {
-	slackClient := slack.CreateSlackClient(apiToken)
-	notes := make(map[string]map[int]string)
+	queueList := make([]app.Queue, 0)
+	queues := os.Getenv("QUEUES_MONITORED")
+	fmt.Println(queues)
+	result := strings.Split(queues, ",")
+	for _, res := range result {
+		tmpQ := strings.Split(res, ":")
+		max, _ := strconv.Atoi(tmpQ[1])
+		queue := app.Queue{
+			Name:     tmpQ[0],
+			MaxDepth: max,
+		}
+		queueList = append(queueList, queue)
+	}
+	fmt.Printf("%+v", queueList)
 
-	// start a websocket-based Real Time API session
-	id := slackClient.SlackConnect()
 	fmt.Println("ten-bot ready, ^C exits")
 
-	go pollQueues(slackClient)
+	awsClient := aws.CreateSqsClient(awsServer, awsRegion, awsClientID)
+
+	go pollQueues(awsClient, queueList)
 
 	for {
-		// read each incoming message
-		m, err := slackClient.GetMessage()
-		if err != nil {
-			log.Fatal(err)
-		}
-		// see if we're mentioned
-		if m.Type == "message" && strings.HasPrefix(m.Text, "<@"+id+">") {
-			// if so try to parse if
-			parts := strings.Fields(m.Text)
-
-			if len(parts) > 2 && parts[1] == "save" {
-				note := strings.Join(append(parts[:0], parts[2:]...), " ")
-				aMap := map[int]string{
-					0: note,
-				}
-				notes[m.User] = aMap
-				m.Text = fmt.Sprintf("@%s - You asked me to save: %s\n", m.User, note)
-			} else if parts[1] == "get" {
-				aMap := notes[m.User]
-				m.Text = fmt.Sprintf("@%s - Your note is: %s\n", m.User, aMap[0])
-			} else {
-				// huh?
-				m.Text = fmt.Sprintf("@%s - sorry, that does not compute\n", m.User)
-			}
-			slackClient.PostMessage(m)
-		}
+		<-time.After(10 * time.Minute)
 	}
 }

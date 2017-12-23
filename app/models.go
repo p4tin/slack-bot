@@ -57,3 +57,8 @@ type UserInfo struct {
 	} `json:"user"`
 }
 
+type Queue struct {
+	Name      string
+	MaxDepth  int
+	LastDepth int
+}
