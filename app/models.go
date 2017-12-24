@@ -16,7 +16,7 @@ type Message struct {
 	Type    string `json:"type"`
 	Channel string `json:"channel"`
 	Text    string `json:"text"`
-	User 	string `json: "user"`
+	User    string `json: "user"`
 }
 
 type UserInfo struct {
@@ -59,6 +59,7 @@ type UserInfo struct {
 
 type Queue struct {
 	Name      string
+	Paused    bool
 	MaxDepth  int
 	LastDepth int
 }
